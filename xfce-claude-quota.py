@@ -534,6 +534,17 @@ def fmt_age(timestamp):
     return "just now" if secs < 60 else _fmt_duration(secs)
 
 
+def fmt_when(value):
+    """Local wall-clock time for an epoch or ISO-8601 timestamp, e.g.
+    'Sat 2026-10-25 14:30' — the tooltip behind a relative duration."""
+    if isinstance(value, str):
+        dt = _parse_iso(value)
+        if dt is None:
+            return None
+        value = dt.timestamp()
+    return datetime.fromtimestamp(value).strftime("%a %Y-%m-%d %H:%M")
+
+
 # ---------------------------------------------------------------------------
 # Platform status (status.claude.com, cached)
 # ---------------------------------------------------------------------------
@@ -956,11 +967,15 @@ def window_ticks(gauge):
     return []
 
 
+# Projections below this read as "on pace" (blue); at or above it, "over pace".
+ON_PACE_LIMIT = 1.05
+
+
 def pace_severity(projection):
     """Index into SEVERITY_ORDER for a projected end-of-window utilization."""
     if projection < 0.85:
         return 0   # green  — will finish with room to spare
-    if projection < 1.05:
+    if projection < ON_PACE_LIMIT:
         return 1   # blue   — will finish about level with the limit
     if projection < 1.35:
         return 2   # yellow — over by up to a third
@@ -996,9 +1011,34 @@ def pace_phrase(projection):
     """'under pace' / 'on pace' / 'over pace (~150% by reset)'."""
     if projection < 0.85:
         return "under pace"
-    if projection < 1.05:
+    if projection < ON_PACE_LIMIT:
         return "on pace"
     return "over pace (~{:.0f}% by reset)".format(min(projection, 9.99) * 100)
+
+
+def catch_up_seconds(gauge, mode="pace", now=None):
+    """Seconds until an over-pace gauge reads "on pace" again, if no more of
+    the quota is used in the meantime; None unless the gauge is over pace.
+
+    With usage frozen the projection falls as the window clock runs, crossing
+    ON_PACE_LIMIT where (used + grace) / (elapsed + grace) == ON_PACE_LIMIT.
+    That is the moment the bar turns blue, so the countdown and the colour
+    agree. It always lands before the reset, because an exhausted quota is
+    never reported as over pace.
+    """
+    if mode == "absolute":
+        return None
+    used = max(0.0, gauge["utilization"] / 100.0)
+    if used >= EXHAUSTED_AT or used < PACE_MIN_USAGE:
+        return None
+    elapsed = window_elapsed(gauge, now)
+    if elapsed is None or pace_projection(gauge, now) < ON_PACE_LIMIT:
+        return None
+    length = gauge.get("window") or window_seconds(gauge.get("key"))
+    target = (used + PACE_GRACE) / ON_PACE_LIMIT - PACE_GRACE
+    # Round up to the minute: the exact crossing sits on the threshold, where
+    # float error can leave the bar a tick short of blue.
+    return 60.0 * max(1, math.ceil((target - elapsed) * length / 60.0))
 
 
 def gauge_status(gauge, mode="pace", now=None):
@@ -1034,8 +1074,14 @@ def bar_color(gauge, stale=False, mode="pace", now=None):
 
 
 def pace_note(gauge, mode="pace", now=None):
-    """Text for under the bar. Always agrees with bar_color()."""
-    return gauge_status(gauge, mode, now)[1]
+    """Text for under the bar. Always agrees with bar_color().
+
+    'over pace (~120% by reset), catch up in 1h 5m' when over pace."""
+    note = gauge_status(gauge, mode, now)[1]
+    catch_up = catch_up_seconds(gauge, mode, now)
+    if note and catch_up is not None:
+        note += ", catch up in {}".format(_fmt_duration(catch_up))
+    return note
 
 
 def pct_color(frac):
@@ -1834,9 +1880,12 @@ def build_detail_window(app):
             pass  # no colour is better than no banner
         note = "Claude platform status — click to open {}".format(STATUS_PAGE_URL)
         age = fmt_age(status.get("updated_at"))
+        tip = "Open {} in your browser".format(STATUS_PAGE_URL)
         if age:
             note += "  ·  updated {}".format(
                 age if age == "just now" else age + " ago")
+            tip += "\nStatus updated {}".format(fmt_when(status["updated_at"]))
+        banner.set_tooltip_text(tip)
         banner_label.set_markup(
             "<span foreground='{}'><b>⚠  {}</b>\n<small>{}</small></span>".format(
                 rgb_to_hex(fg), GLib.markup_escape_text(headline),
@@ -1924,17 +1973,32 @@ def build_detail_window(app):
             bar = Bar(g["utilization"] / 100.0, bar_color(g, mode=color_mode),
                       ticks=window_ticks(g), pace=window_elapsed(g))
             row.pack_start(bar, False, False, 0)
-            sub_bits = []
+            # (text, tooltip) runs: each duration is its own label, so it can
+            # carry a tooltip with the wall-clock time it stands for.
+            pieces = []
             reset = fmt_reset_delta(g["resets_at"])
             if reset:
-                sub_bits.append("Resets in {}".format(reset))
-            note = pace_note(g, color_mode)
+                pieces += [("Resets in ", None), (reset, fmt_when(g["resets_at"]))]
+            note = gauge_status(g, color_mode)[1]
             if note:
-                sub_bits.append(note)
-            if sub_bits:
-                sub = Gtk.Label(xalign=0)
-                sub.set_markup("<small>{}</small>".format(
-                    GLib.markup_escape_text("  ·  ".join(sub_bits))))
+                if pieces:
+                    pieces.append(("  ·  ", None))
+                pieces.append((note, None))
+                catch_up = catch_up_seconds(g, color_mode)
+                if catch_up is not None:
+                    pieces += [(", catch up in ", None),
+                               (_fmt_duration(catch_up),
+                                "{} — if no more quota is used before then".format(
+                                    fmt_when(time.time() + catch_up)))]
+            if pieces:
+                sub = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+                for text, tip in pieces:
+                    lbl = Gtk.Label(xalign=0)
+                    lbl.set_markup("<small>{}</small>".format(
+                        GLib.markup_escape_text(text)))
+                    if tip:
+                        lbl.set_tooltip_text(tip)
+                    sub.pack_start(lbl, False, False, 0)
                 row.pack_start(sub, False, False, 0)
             gauges_box.pack_start(row, False, False, 0)
         gauges_box.show_all()

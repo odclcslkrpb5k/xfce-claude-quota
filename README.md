@@ -169,6 +169,8 @@ well as the quota: the window opens at the left edge and resets at the right.
   pace. Fill that runs past the triangle is over pace, and the gap is how far;
   fill that stops short of it is under. Hover the bar for the elapsed
   percentage.
+- **Durations** in the line under the bar — `Resets in 3d 5h`, `catch up in
+  14h 58m` — show the actual date and time they point to when you hover them.
 
 This complements the `~136% by reset` text rather than duplicating it: the
 triangle is the raw position on the clock, while the percentage is a projection
@@ -287,6 +289,12 @@ Two guards keep the projection honest:
 The text under each bar comes from the same computation as the colour, so the
 two can never disagree: `under pace` / `on pace` / `over pace (~150% by
 reset)`, or `nearly exhausted` when the quota is spent.
+
+An over-pace bar also says how long it would take to get back: `over pace
+(~120% by reset), catch up in 14h 58m`. That is the time until the bar reads
+*on pace* (and turns blue) **if you stop using that quota right now** — usage
+stays put while the window clock catches up with it. Any further use pushes it
+out. It always lands before the reset.
 
 **A caveat worth knowing:** the projection is a *whole-window average*, so it
 gets less sensitive the further into a window you are. With four of five hours
