@@ -1664,6 +1664,9 @@ def _require_gtk():
     gi.require_version("Gtk", "3.0")
 
 
+DETAIL_WIDTH = 680
+DETAIL_HISTORY_HEIGHT = 680   # window height once Recent activity is shown
+
 RANGES = [
     ("Last 6 hours", 6 * 3600, 10 * 60),
     ("Last 24 hours", 24 * 3600, 60 * 60),
@@ -1830,7 +1833,9 @@ def build_detail_window(app):
                 ctx.fill()
 
     win = Gtk.ApplicationWindow(application=app, title="Claude Usage")
-    win.set_default_size(680, 680)
+    # Natural height: the activity section starts hidden, so the window opens
+    # just tall enough for the gauges and grows when the section is shown.
+    win.set_default_size(DETAIL_WIDTH, -1)
     win.set_icon_name("utilities-system-monitor")
 
     box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
@@ -1892,10 +1897,6 @@ def build_detail_window(app):
                 GLib.markup_escape_text(note)))
         banner.show()
 
-    header = Gtk.Label(xalign=0)
-    header.set_use_markup(True)
-    box.pack_start(header, False, False, 0)
-
     # --- Official gauges (rebuilt on each refresh) ---
     gauges_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
     box.pack_start(gauges_box, False, False, 0)
@@ -1910,13 +1911,23 @@ def build_detail_window(app):
     link_row.pack_start(link, False, False, 0)
     refresh_btn = Gtk.Button(label="Refresh now")
     prefs_btn = Gtk.Button(label="Preferences…")
+    history_btn = Gtk.ToggleButton(label="Recent activity")
+    history_btn.set_tooltip_text(
+        "Show or hide the token graph and per-message table")
     link_row.pack_end(prefs_btn, False, False, 0)
     link_row.pack_end(refresh_btn, False, False, 0)
+    link_row.pack_end(history_btn, False, False, 0)
     box.pack_start(link_row, False, False, 0)
 
-    box.pack_start(Gtk.Separator(), False, False, 4)
+    # --- Local history: hidden until the toggle reveals it ---
+    # Same visibility pattern as the banner: no_show_all keeps win.show_all()
+    # off it, the children are shown once, and history.show()/hide() switch it.
+    history = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+    history.set_no_show_all(True)
+    box.pack_start(history, True, True, 0)
 
-    # --- Local history ---
+    history.pack_start(Gtk.Separator(), False, False, 4)
+
     hist_hdr = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
     hist_lbl = Gtk.Label(xalign=0)
     hist_lbl.set_markup("<b>Recent activity</b> <small>(local Claude Code "
@@ -1927,10 +1938,10 @@ def build_detail_window(app):
         range_combo.append_text(name)
     range_combo.set_active(1)
     hist_hdr.pack_end(range_combo, False, False, 0)
-    box.pack_start(hist_hdr, False, False, 0)
+    history.pack_start(hist_hdr, False, False, 0)
 
     chart = Chart()
-    box.pack_start(chart, True, True, 0)
+    history.pack_start(chart, True, True, 0)
 
     store = Gtk.ListStore(str, str, str, str, str, str)
     tree = Gtk.TreeView(model=store)
@@ -1949,7 +1960,9 @@ def build_detail_window(app):
     scroll.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
     scroll.set_min_content_height(180)
     scroll.add(tree)
-    box.pack_start(scroll, True, True, 0)
+    history.pack_start(scroll, True, True, 0)
+    for child in history.get_children():
+        child.show_all()
 
     state = {"refreshing": False}
 
@@ -2018,9 +2031,8 @@ def build_detail_window(app):
                 banner.hide()
 
             sub = read_subscription_type(cfg2)
-            header.set_markup("<big><b>Claude usage</b></big>{}".format(
-                "  <small>({} plan)</small>".format(GLib.markup_escape_text(sub))
-                if sub else ""))
+            win.set_title("Claude Usage ({} plan)".format(sub.capitalize())
+                          if sub else "Claude Usage")
 
             bits = []
             if fetched_at:
@@ -2032,29 +2044,48 @@ def build_detail_window(app):
                         " — " + GLib.markup_escape_text(error) if error else ""))
             status.set_markup("<small>{}</small>".format(" · ".join(bits) or " "))
 
-            try:
-                index_new_data(conn, cfg_get(cfg2, "claude_dir"))
-            except Exception:
-                pass
-            idx = range_combo.get_active()
-            _, span, bucket = RANGES[idx if idx >= 0 else 1]
-            since = int(time.time()) - span
-            chart.set_data([(int(b), v) for b, v in series(conn, since, bucket)])
-
-            store.clear()
-            for ts, model, inp, out, cc, cr in recent_events(conn, 800):
-                store.append([
-                    fmt_datetime(ts), short_model(model),
-                    fmt_tokens(inp), fmt_tokens(out),
-                    fmt_tokens(cc + cr), fmt_tokens(inp + out + cc + cr),
-                ])
+            refresh_history(cfg2)
         finally:
             state["refreshing"] = False
+
+    def refresh_history(cfg2=None):
+        """Re-index transcripts and refill the graph and table — only while
+        the section is visible; showing it calls this again."""
+        if not history_btn.get_active():
+            return
+        cfg2 = cfg2 or load_config()
+        try:
+            index_new_data(conn, cfg_get(cfg2, "claude_dir"))
+        except Exception:
+            pass
+        idx = range_combo.get_active()
+        _, span, bucket = RANGES[idx if idx >= 0 else 1]
+        since = int(time.time()) - span
+        chart.set_data([(int(b), v) for b, v in series(conn, since, bucket)])
+
+        store.clear()
+        for ts, model, inp, out, cc, cr in recent_events(conn, 800):
+            store.append([
+                fmt_datetime(ts), short_model(model),
+                fmt_tokens(inp), fmt_tokens(out),
+                fmt_tokens(cc + cr), fmt_tokens(inp + out + cc + cr),
+            ])
+
+    def toggle_history(button):
+        width = win.get_size()[0]
+        if button.get_active():
+            history.show()
+            refresh_history()
+            win.resize(width, max(win.get_size()[1], DETAIL_HISTORY_HEIGHT))
+        else:
+            history.hide()
+            win.resize(width, 1)   # shrink back to the gauges' natural height
 
     refresh_btn.connect("clicked", lambda *_: refresh(force=True))
     prefs_btn.connect("clicked",
                       lambda *_: show_preferences(parent=win, on_save=refresh))
-    range_combo.connect("changed", lambda *_: refresh())
+    history_btn.connect("toggled", toggle_history)
+    range_combo.connect("changed", lambda *_: refresh_history())
     win.connect("destroy", lambda *_: conn.close())
 
     refresh()

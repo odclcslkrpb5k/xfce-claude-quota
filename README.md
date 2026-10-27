@@ -150,12 +150,14 @@ second click focuses the existing window).
   and pace. A coloured frame around the image means *Claude* is degraded — see
   *Platform status*.
 - **Detailed view:** every gauge with its reset countdown and pace (mirrors the
-  VS Code popup, including per-model weekly buckets when present), a *Manage usage on
-  claude.ai* link, and your recent local activity — token graph with a range
-  selector (6 h / 24 h / 7 d / 30 d) and a per-message table (time, model,
-  input/output/cache/total tokens). Auto-refreshes every 30 s, and shows a
-  click-through platform-status banner when Claude is degraded. Each bar also
-  carries a time scale — see *Reading the detail bars*.
+  VS Code popup, including per-model weekly buckets when present), with your
+  plan in the window title and a *Manage usage on claude.ai* link. The
+  **Recent activity** button reveals your local activity — token graph with a
+  range selector (6 h / 24 h / 7 d / 30 d) and a per-message table (time,
+  model, input/output/cache/total tokens); it starts hidden each time the
+  window opens. Auto-refreshes every 30 s, and shows a click-through
+  platform-status banner when Claude is degraded. Each bar also carries a time
+  scale — see *Reading the detail bars*.
 
 ### Reading the detail bars
 
